@@ -8,17 +8,52 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.concurrent.TimeUnit;
+
 public class ReadStream {
+    public static long expensive_calculation(long value) {
+        System.out.println("Sleeping for 10s in stream "+value);
+        try {
+            Thread.sleep(10000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return value;
+    }
 
     public static Flowable<String> file_contents_observable(FileParser fileParser, @NonNull Scheduler fileParserScheduler, @NonNull Scheduler downstreamScheduler) {
+        Flowable<Long> fileModifiedInterval = Flowable.interval(1, TimeUnit.SECONDS, fileParserScheduler)
+                //Uncomment this to see the rate that seconds are pulled into the subscriber.
+                //.doOnNext(System.out::println)
+                .onBackpressureLatest();
 
-        //Use FileParser methods to implement this
-        //It should only read file contents if the modified date changes
-        //and no tests should need to be modified to get this implementation working.
+        Flowable<Long> fileWasModified = fileModifiedInterval
+                //Specify buffer size here otherwise it'll default needlessly to 128 and waste space.
+                //Use IO thread for IO operations
+                .observeOn(fileParserScheduler, false, 1)
+                //Turn this on to verify buffer doesn't exceed 128 items or error.
+                //.map(i -> expensive_calculation(i))
+                .map(i -> fileParser.getLastModifiedTimestamp())
+                .distinctUntilChanged()
+                .doOnNext(modifiedDate -> System.out.println("Modified Date: "+modifiedDate));
 
-        //Stub method so that tests will compile (and fail).
-        return Flowable.just("");
 
+
+        return fileWasModified
+                .map(i -> fileParser.readContents())
+                .doOnError(err -> {
+                    System.err.println("Error occurred reading file: ");
+                    err.printStackTrace();
+                })
+                .retry()
+                .replay(1)
+                .refCount()
+                //Default downstream to use computation thread, done reading file.
+                .observeOn(downstreamScheduler);
     }
 
     public static void main(String[] args) throws InterruptedException {
